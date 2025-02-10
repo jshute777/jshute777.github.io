@@ -1,0 +1,652 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Physics Space Invaders</title>
+  <style>
+    body { 
+      margin: 0; 
+      background: #000; 
+      color: white; 
+      font-family: Arial, sans-serif;
+    }
+    canvas { 
+      display: block; 
+      margin: 0 auto; 
+      background: #000;
+    }
+    #controls {
+      width: 800px;
+      margin: 10px auto;
+      text-align: center;
+    }
+    #speedSlider {
+      width: 300px;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="gameCanvas" width="800" height="600"></canvas>
+  <div id="controls">
+    <label for="speedSlider">Game Speed:</label>
+    <input type="range" id="speedSlider" min="0.2" max="2" step="0.1" value="1">
+    <span id="speedValue">1</span>
+  </div>
+  <script>
+    // ===============================
+    // Helper: Draw Rounded Button with Gradient
+    // ===============================
+    function drawRoundedRect(ctx, x, y, width, height, radius) {
+      ctx.beginPath();
+      ctx.moveTo(x + radius, y);
+      ctx.lineTo(x + width - radius, y);
+      ctx.quadraticCurveTo(x + width, y, x + width, y + radius);
+      ctx.lineTo(x + width, y + height - radius);
+      ctx.quadraticCurveTo(x + width, y + height, x + width - radius, y + height);
+      ctx.lineTo(x + radius, y + height);
+      ctx.quadraticCurveTo(x, y + height, x, y + height - radius);
+      ctx.lineTo(x, y + radius);
+      ctx.quadraticCurveTo(x, y, x + radius, y);
+      ctx.closePath();
+    }
+    
+    function drawRoundedButton(x, y, width, height, text) {
+      const radius = 10;
+      ctx.save();
+      // Create a vertical gradient for the button fill.
+      let grad = ctx.createLinearGradient(x, y, x, y + height);
+      grad.addColorStop(0, "#444");
+      grad.addColorStop(1, "#222");
+      drawRoundedRect(ctx, x, y, width, height, radius);
+      ctx.fillStyle = grad;
+      ctx.fill();
+      // Draw white border.
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = "white";
+      ctx.stroke();
+      // Draw centered text.
+      ctx.fillStyle = "white";
+      ctx.font = "20px Arial";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(text, x + width / 2, y + height / 2);
+      ctx.restore();
+    }
+    
+    // ===============================
+    // Canvas and Global Variables
+    // ===============================
+    const canvas = document.getElementById("gameCanvas");
+    const ctx = canvas.getContext("2d");
+    
+    let gameState = "normal"; // "normal", "help", "gameover", "gamewon"
+    let gameSpeed = 1; // Controlled by the slider
+    
+    // ===============================
+    // Timer Variables
+    // ===============================
+    let startTime = 0;
+    let finalTime = 0;
+    function getElapsedTime() {
+      return ((Date.now() - startTime) / 1000).toFixed(1);
+    }
+    
+    // ===============================
+    // Player Setup (Scaled 1.5x)
+    // ===============================
+    // Previous player dimensions were 50x30; now multiply by 1.5 → 75x45.
+    const playerWidth = 75;
+    const playerHeight = 45;
+    const playerY = 480;
+    const playerSpeed = 3;
+    const playerXInitial = canvas.width / 2 - playerWidth / 2;
+    let playerX = playerXInitial;
+    let playerXChange = 0;
+    
+    // ===============================
+    // Bullet Setup (Using an Array)
+    // ===============================
+    // Each bullet is an object: { x, y, type }
+    let bullets = [];
+    // Bullet width is now 3, height remains 10.
+    const bulletWidth = 3;
+    const bulletHeight = 10;
+    const bulletSpeed = 5;
+    let lastShotTime = 0; // Fire one bullet every 0.4 seconds.
+    
+    // ===============================
+    // Bullet Type Selection
+    // ===============================
+    const bulletTypes = ["kg", "m/s/s", "N", "kg*m/s", "m/s", "J", "N*s", "s", "N/m", "m"];
+    let selectedBulletIndex = 0;
+    function getSelectedBulletType() {
+      return bulletTypes[selectedBulletIndex];
+    }
+    
+    // ===============================
+    // Starfield Background Setup
+    // ===============================
+    let stars = [];
+    function initStars() {
+      stars = [];
+      const numStars = 100;
+      for (let i = 0; i < numStars; i++) {
+        stars.push({
+          x: Math.random() * canvas.width,
+          y: Math.random() * canvas.height,
+          size: Math.random() * 2 + 0.5,
+          speed: Math.random() * 0.5 + 0.2
+        });
+      }
+    }
+    function updateAndDrawStars() {
+      for (let star of stars) {
+        star.y += star.speed * gameSpeed;
+        if (star.y > canvas.height) {
+          star.y = 0;
+          star.x = Math.random() * canvas.width;
+        }
+        ctx.fillStyle = "white";
+        ctx.beginPath();
+        ctx.arc(star.x, star.y, star.size, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+    
+    // ===============================
+    // Load Alien and Spaceship PNGs
+    // ===============================
+    const alienImage = new Image();
+    alienImage.src = "alien.png";
+    
+    const spaceshipImage = new Image();
+    spaceshipImage.src = "spaceship.png";
+    
+    // ===============================
+    // Physics Quantities Dictionary
+    // ===============================
+    const physicsQuantities = {
+      m:  { name: "mass",             unit: "kg" },
+      a:  { name: "acceleration",     unit: "m/s/s" },
+      F:  { name: "Force",            unit: "N" },
+      p:  { name: "momentum",         unit: "kg*m/s" },
+      v:  { name: "speed",            unit: "m/s" },
+      KE: { name: "kinetic energy",   unit: "J" },
+      J:  { name: "impulse",          unit: "N*s" },
+      t:  { name: "time",             unit: "s" },
+      k:  { name: "spring constant",  unit: "N/m" },
+      d:  { name: "distance",         unit: "m" }
+    };
+    
+    // ===============================
+    // Enemy (Alien) Setup (Scaled 1.5x)
+    // ===============================
+    // Previous enemy dimensions were 40x40; now multiply by 1.5 → 60x60.
+    const enemyWidth = 60;
+    const enemyHeight = 60;
+    let enemies = [];
+    function isOverlapping(e1, e2) {
+      const centerX1 = e1.x + enemyWidth / 2;
+      const centerY1 = e1.y + enemyHeight / 2;
+      const centerX2 = e2.x + enemyWidth / 2;
+      const centerY2 = e2.y + enemyHeight / 2;
+      const dx = centerX1 - centerX2;
+      const dy = centerY1 - centerY2;
+      const distance = Math.sqrt(dx * dx + dy * dy);
+      return distance < enemyWidth;
+    }
+    function spawnEnemy(randomVariable = true, variable = null) {
+      const maxAttempts = 100;
+      let candidate;
+      for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        candidate = {
+          x: Math.floor(Math.random() * (canvas.width - enemyWidth)),
+          y: Math.floor(Math.random() * (250 - 50 + 1)) + 50,
+          x_change: 2,
+          y_change: 20,
+          variable: randomVariable
+            ? Object.keys(physicsQuantities)[Math.floor(Math.random() * Object.keys(physicsQuantities).length)]
+            : variable
+        };
+        let overlapping = false;
+        for (let enemy of enemies) {
+          if (isOverlapping(candidate, enemy)) {
+            overlapping = true;
+            break;
+          }
+        }
+        if (!overlapping) return candidate;
+      }
+      return candidate;
+    }
+    function initEnemies() {
+      enemies = [];
+      for (let key in physicsQuantities) {
+        enemies.push(spawnEnemy(false, key));
+      }
+    }
+    
+    // ===============================
+    // Particle Explosion Setup (Particle-Like Effect)
+    // ===============================
+    let particles = [];
+    function createExplosion(x, y) {
+      const numParticles = 30;
+      for (let i = 0; i < numParticles; i++) {
+        let angle = Math.random() * 2 * Math.PI;
+        let speed = Math.random() * 4 + 1;
+        let particle = {
+          x: x,
+          y: y,
+          vx: Math.cos(angle) * speed,
+          vy: Math.sin(angle) * speed,
+          life: 30,
+          initialLife: 30,
+          size: Math.random() * 3 + 2,
+          color: "#FFA500"
+        };
+        particles.push(particle);
+      }
+    }
+    function updateAndDrawParticles() {
+      for (let i = particles.length - 1; i >= 0; i--) {
+        let p = particles[i];
+        p.x += p.vx * gameSpeed;
+        p.y += p.vy * gameSpeed;
+        p.life--;
+        if (p.life <= 0) {
+          particles.splice(i, 1);
+          continue;
+        }
+        let alpha = p.life / p.initialLife;
+        ctx.fillStyle = p.color;
+        ctx.globalAlpha = alpha;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.globalAlpha = 1;
+      }
+    }
+    
+    // ===============================
+    // Button Setup (Rounded, Gradient-Filled)
+    // ===============================
+    const helpButtonRect = { x: 10, y: 10, width: 100, height: 40 };
+    // For the help screen, we'll use a "Return" button.
+    const returnButtonRect = { x: canvas.width / 2 - 75, y: canvas.height - 100, width: 150, height: 50 };
+    const playAgainButtonRect = { x: canvas.width / 2 - 75, y: canvas.height / 2 + 50, width: 150, height: 50 };
+    
+    function drawHelpButton() {
+      drawRoundedButton(helpButtonRect.x, helpButtonRect.y, helpButtonRect.width, helpButtonRect.height, "Help");
+    }
+    function drawReturnButton() {
+      drawRoundedButton(returnButtonRect.x, returnButtonRect.y, returnButtonRect.width, returnButtonRect.height, "Return");
+    }
+    function drawPlayAgainButton() {
+      drawRoundedButton(playAgainButtonRect.x, playAgainButtonRect.y, playAgainButtonRect.width, playAgainButtonRect.height, "Play Again");
+    }
+    
+    // ===============================
+    // Drawing Functions
+    // ===============================
+    // Draw the spaceship using spaceship.png and display the bullet type centered under the spaceship.
+    function drawPlayer() {
+      ctx.drawImage(spaceshipImage, playerX, playerY, playerWidth, playerHeight);
+      ctx.fillStyle = "white";
+      ctx.font = "20px Arial";
+      ctx.textAlign = "center";
+      ctx.fillText(getSelectedBulletType(), playerX + playerWidth / 2, playerY + playerHeight + 20);
+    }
+    
+    // Draw the enemy using alien.png and overlay the physics variable letter in bright orange.
+    function drawEnemy(enemy) {
+      ctx.drawImage(alienImage, enemy.x, enemy.y, enemyWidth, enemyHeight);
+      ctx.font = "bold 24px Arial";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = "black";
+      ctx.strokeText(enemy.variable, enemy.x + enemyWidth / 2, enemy.y + enemyHeight / 2);
+      ctx.fillStyle = "#FFA500";
+      ctx.fillText(enemy.variable, enemy.x + enemyWidth / 2, enemy.y + enemyHeight / 2);
+    }
+    
+    // Draw the bullet with a comet effect, longer tail (80 pixels) and bright purple color.
+    function drawBulletAt(bullet) {
+      ctx.save();
+      // Draw comet tail behind the bullet:
+      const tailLength = 80;
+      let tailGradient = ctx.createLinearGradient(
+        bullet.x + bulletWidth/2, bullet.y + bulletHeight/2,
+        bullet.x + bulletWidth/2, bullet.y + bulletHeight/2 + tailLength
+      );
+      tailGradient.addColorStop(0, "rgba(255, 0, 255, 0.8)");
+      tailGradient.addColorStop(1, "rgba(255, 0, 255, 0)");
+      ctx.fillStyle = tailGradient;
+      ctx.fillRect(bullet.x + bulletWidth/2 - 2, bullet.y + bulletHeight/2, 4, tailLength);
+      
+      // Draw the bullet as a radial gradient circle.
+      let bulletGradient = ctx.createRadialGradient(
+        bullet.x + bulletWidth/2, bullet.y + bulletHeight/2, 1,
+        bullet.x + bulletWidth/2, bullet.y + bulletHeight/2, bulletWidth * 3
+      );
+      bulletGradient.addColorStop(0, "rgba(255, 0, 255, 1)");
+      bulletGradient.addColorStop(0.5, "rgba(200, 0, 255, 0.6)");
+      bulletGradient.addColorStop(1, "rgba(150, 0, 255, 0)");
+      ctx.fillStyle = bulletGradient;
+      ctx.beginPath();
+      ctx.arc(bullet.x + bulletWidth/2, bullet.y + bulletHeight/2, bulletWidth * 3, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+    
+    // Draw the timer (in seconds) centered at the top.
+    function drawTimer() {
+      const elapsedTime = getElapsedTime();
+      ctx.fillStyle = "white";
+      ctx.font = "32px Arial";
+      ctx.textAlign = "center";
+      ctx.fillText("Time: " + elapsedTime + " s", canvas.width / 2, 40);
+    }
+    
+    function drawGameOverScreen() {
+      ctx.fillStyle = "white";
+      ctx.font = "32px Arial";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText("GAME OVER", canvas.width / 2, canvas.height / 2 - 50);
+      drawPlayAgainButton();
+    }
+    
+    // Draw the win screen with final time and a play again button.
+    function drawGameWonScreen() {
+      ctx.fillStyle = "white";
+      ctx.font = "32px Arial";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText("Congratulations!", canvas.width / 2, canvas.height / 2 - 40);
+      ctx.fillText("Cleared in " + finalTime + " s", canvas.width / 2, canvas.height / 2 + 10);
+      drawPlayAgainButton();
+    }
+    
+    // Draw the help screen with a centered table of physics quantities and a Return button.
+    function drawHelpPage() {
+      // Draw a semi-transparent overlay.
+      ctx.fillStyle = "rgba(0, 0, 0, 0.8)";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      
+      // Draw the help title.
+      ctx.fillStyle = "white";
+      ctx.font = "32px Arial";
+      ctx.textAlign = "center";
+      ctx.fillText("Help: Physics Quantities", canvas.width / 2, 60);
+      
+      // Draw the table with fixed width 500px.
+      const tableWidth = 500;
+      const startX = (canvas.width - tableWidth) / 2;
+      const headerY = 120;
+      ctx.font = "20px Arial";
+      ctx.fillText("Quantity", startX + 200/2, headerY);
+      ctx.fillText("Variable", startX + 200 + 100/2, headerY);
+      ctx.fillText("Standard Unit", startX + 200 + 100 + 200/2, headerY);
+      
+      let rowY = 150;
+      const rowHeight = 30;
+      for (let key in physicsQuantities) {
+        let quantityName = physicsQuantities[key].name;
+        quantityName = quantityName.charAt(0).toUpperCase() + quantityName.slice(1);
+        let variable = key;
+        let unit = physicsQuantities[key].unit;
+        ctx.fillText(quantityName, startX + 200/2, rowY);
+        ctx.fillText(variable, startX + 200 + 100/2, rowY);
+        ctx.fillText(unit, startX + 200 + 100 + 200/2, rowY);
+        rowY += rowHeight;
+      }
+      
+      // Draw a Return button near the bottom.
+      const returnButtonWidth = 150;
+      const returnButtonHeight = 50;
+      const returnButtonX = canvas.width / 2 - returnButtonWidth / 2;
+      const returnButtonY = canvas.height - 100;
+      drawRoundedButton(returnButtonX, returnButtonY, returnButtonWidth, returnButtonHeight, "Return");
+    }
+    
+    // ===============================
+    // Update Functions (using gameSpeed multiplier)
+    // ===============================
+    function updatePlayer() {
+      playerX += playerXChange * gameSpeed;
+      if (playerX < 0) playerX = 0;
+      if (playerX > canvas.width - playerWidth) playerX = canvas.width - playerWidth;
+    }
+    
+    function updateEnemies() {
+      for (let enemy of enemies) {
+        enemy.x += enemy.x_change * gameSpeed;
+        if (enemy.x <= 0) {
+          enemy.x_change = 2;
+          enemy.y += enemy.y_change * gameSpeed;
+        }
+        if (enemy.x >= canvas.width - enemyWidth) {
+          enemy.x_change = -2;
+          enemy.y += enemy.y_change * gameSpeed;
+        }
+        if (enemy.y > 440) {
+          gameState = "gameover";
+        }
+      }
+    }
+    
+    // Check collision between bullet and enemy using distance between centers.
+    function checkCollision(enemy, bx, by) {
+      const centerX = enemy.x + enemyWidth / 2;
+      const centerY = enemy.y + enemyHeight / 2;
+      const bulletCenterX = bx + bulletWidth / 2;
+      const bulletCenterY = by + bulletHeight / 2;
+      const dx = centerX - bulletCenterX;
+      const dy = centerY - bulletCenterY;
+      const distance = Math.sqrt(dx * dx + dy * dy);
+      return distance < enemyWidth / 2 + 10;
+    }
+    
+    // Update all bullets in the bullets array.
+    function updateBullets() {
+      for (let i = bullets.length - 1; i >= 0; i--) {
+        let bullet = bullets[i];
+        bullet.y -= bulletSpeed * gameSpeed;
+        if (bullet.y < 0) {
+          bullets.splice(i, 1);
+          continue;
+        }
+        for (let j = 0; j < enemies.length; j++) {
+          let enemy = enemies[j];
+          if (checkCollision(enemy, bullet.x, bullet.y)) {
+            const correctUnit = physicsQuantities[enemy.variable].unit;
+            let correct;
+            if (enemy.variable === "p" || enemy.variable === "J") {
+              correct = (bullet.type === "kg*m/s" || bullet.type === "N*s");
+            } else {
+              correct = (bullet.type === correctUnit);
+            }
+            if (correct) {
+              createExplosion(enemy.x + enemyWidth / 2, enemy.y + enemyHeight / 2);
+              enemies.splice(j, 1);
+            } else {
+              enemies.push(spawnEnemy(true));
+            }
+            bullets.splice(i, 1);
+            break;
+          }
+        }
+      }
+    }
+    
+    function checkWin() {
+      if (enemies.length === 0) {
+        gameState = "gamewon";
+        finalTime = getElapsedTime();
+      }
+    }
+    
+    // ===============================
+    // Main Update and Draw Functions
+    // ===============================
+    function update() {
+      if (gameState === "normal") {
+        updatePlayer();
+        updateEnemies();
+        updateBullets();
+        checkWin();
+      }
+    }
+    
+    function draw() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      // Draw starfield background.
+      updateAndDrawStars();
+      if (gameState === "gameover") {
+        drawGameOverScreen();
+      } else if (gameState === "gamewon") {
+        drawGameWonScreen();
+      } else if (gameState === "help") {
+        drawHelpPage();
+      } else {
+        drawPlayer();
+        for (let bullet of bullets) {
+          drawBulletAt(bullet);
+        }
+        for (let enemy of enemies) {
+          drawEnemy(enemy);
+        }
+        drawTimer();
+        updateAndDrawParticles();
+        drawHelpButton();
+      }
+    }
+    
+    // ===============================
+    // Starfield Background Update
+    // ===============================
+    function updateAndDrawStars() {
+      for (let star of stars) {
+        star.y += star.speed * gameSpeed;
+        if (star.y > canvas.height) {
+          star.y = 0;
+          star.x = Math.random() * canvas.width;
+        }
+        ctx.fillStyle = "white";
+        ctx.beginPath();
+        ctx.arc(star.x, star.y, star.size, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+    
+    // ===============================
+    // Main Game Loop
+    // ===============================
+    function gameLoop() {
+      update();
+      draw();
+      requestAnimationFrame(gameLoop);
+    }
+    
+    // ===============================
+    // Reset/Restart Function
+    // ===============================
+    function resetGame() {
+      startTime = Date.now();
+      playerX = playerXInitial;
+      playerXChange = 0;
+      bullets = [];
+      gameState = "normal";
+      selectedBulletIndex = 0;
+      initEnemies();
+      particles = [];
+      initStars();
+    }
+    
+    // ===============================
+    // Slider Setup for Game Speed
+    // ===============================
+    const speedSlider = document.getElementById("speedSlider");
+    const speedValueDisplay = document.getElementById("speedValue");
+    speedSlider.addEventListener("input", (e) => {
+      gameSpeed = parseFloat(e.target.value);
+      speedValueDisplay.textContent = gameSpeed;
+    });
+    
+    // ===============================
+    // Input Event Listeners
+    // ===============================
+    document.addEventListener("keydown", (e) => {
+      if (gameState === "normal") {
+        if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+          e.preventDefault();
+        }
+        if (e.key === "ArrowLeft") {
+          playerXChange = -playerSpeed;
+        } else if (e.key === "ArrowRight") {
+          playerXChange = playerSpeed;
+        } else if (e.key === " " || e.key === "Spacebar") {
+          if (Date.now() - lastShotTime >= 400) {
+            let newBullet = {
+              x: playerX + playerWidth / 2 - bulletWidth / 2,
+              y: playerY,
+              type: getSelectedBulletType()
+            };
+            bullets.push(newBullet);
+            lastShotTime = Date.now();
+          }
+        } else if (e.key === "a" || e.key === "A") {
+          selectedBulletIndex = (selectedBulletIndex - 1 + bulletTypes.length) % bulletTypes.length;
+        } else if (e.key === "d" || e.key === "D") {
+          selectedBulletIndex = (selectedBulletIndex + 1) % bulletTypes.length;
+        }
+      }
+    });
+    
+    document.addEventListener("keyup", (e) => {
+      if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+        playerXChange = 0;
+      }
+    });
+    
+    canvas.addEventListener("mousedown", (e) => {
+      const rect = canvas.getBoundingClientRect();
+      const mouseX = e.clientX - rect.left;
+      const mouseY = e.clientY - rect.top;
+      if (gameState === "help") {
+        if (mouseX >= returnButtonRect.x && mouseX <= returnButtonRect.x + returnButtonRect.width &&
+            mouseY >= returnButtonRect.y && mouseY <= returnButtonRect.y + returnButtonRect.height) {
+          gameState = "normal";
+        }
+      } else if (gameState === "gameover" || gameState === "gamewon") {
+        if (mouseX >= playAgainButtonRect.x && mouseX <= playAgainButtonRect.x + playAgainButtonRect.width &&
+            mouseY >= playAgainButtonRect.y && mouseY <= playAgainButtonRect.y + playAgainButtonRect.height) {
+          resetGame();
+        }
+      } else if (gameState === "normal") {
+        if (mouseX >= helpButtonRect.x && mouseX <= helpButtonRect.x + helpButtonRect.width &&
+            mouseY >= helpButtonRect.y && mouseY <= helpButtonRect.y + helpButtonRect.height) {
+          gameState = "help";
+        }
+      }
+    });
+    
+    // ===============================
+    // Start the Game
+    // ===============================
+    let assetsLoaded = 0;
+    function checkAssetsLoaded() {
+      assetsLoaded++;
+      if (assetsLoaded >= 2) {
+        resetGame();
+        gameLoop();
+      }
+    }
+    alienImage.onload = checkAssetsLoaded;
+    spaceshipImage.onload = checkAssetsLoaded;
+  </script>
+</body>
+</html>
+
